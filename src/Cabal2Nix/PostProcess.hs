@@ -1,12 +1,21 @@
 module Cabal2Nix.PostProcess ( postProcess ) where
 
--- import qualified Data.Set as Set
+import Control.Lens
+import Data.Maybe
 import Distribution.Nixpkgs.Haskell
--- import Distribution.Text ( display )
+import Distribution.Package
+import Distribution.Text
+import Distribution.Version
 
 postProcess :: Derivation -> Derivation
-postProcess = id {- postProcess' . fixGtkBuilds
+postProcess deriv = foldr ($) deriv [ f | (Dependency n vr, f) <- hooks, packageName deriv == n, packageVersion deriv `withinRange` vr ]
 
+hooks :: [(Dependency, Derivation -> Derivation)]
+hooks = over (mapped._1) (\str -> fromMaybe (error ("invalid constraint: " ++ show str)) (simpleParse str))
+  [ ("haddock", set phaseOverrides "preCheck = \"unset GHC_PACKAGE_PATH\";")
+  ]
+
+{-
 fixGtkBuilds :: Derivation -> Derivation
 fixGtkBuilds deriv@(MkDerivation {..}) = deriv { pkgConfDeps = pkgConfDeps `Set.difference` buildDepends }
 
@@ -50,7 +59,7 @@ postProcess' deriv@(MkDerivation {..})
   | pname == "haddock" && version < Version [2,14] []
                                 = deriv { buildTools = Set.insert "alex" (Set.insert "happy" buildTools) }
   | pname == "GlomeVec"         = deriv { buildTools = Set.insert "llvm" buildTools }
-  | pname == "haddock"          = deriv { phaseOverrides = haddockPreCheck }
+
   | pname == "happy"            = deriv { buildTools = Set.insert "perl" buildTools }
   | pname == "haskeline"        = deriv { buildDepends = Set.insert "utf8-string" buildDepends }
   | pname == "haskell-src"      = deriv { buildTools = Set.insert "happy" buildTools }
@@ -121,122 +130,120 @@ postProcess' deriv@(MkDerivation {..})
   | pname == "zip-archive"      = deriv { testDepends = Set.delete "zip" testDepends, buildTools = Set.insert "zip" buildTools }
   | otherwise                   = deriv
 
-ghcModPostInstall :: String -> Version -> String
-ghcModPostInstall pname version = unlines
-  [ "configureFlags = \"--datasubdir=" ++ pname ++ "-" ++ display version ++ "\";"
-  , "postInstall = ''"
-  , "  cd $out/share/" ++ pname ++ "-" ++ display version
-  , "  make"
-  , "  rm Makefile"
-  , "  cd .."
-  , "  ensureDir \"$out/share/emacs\""
-  , "  mv " ++ pname ++ "-" ++ display version ++ " emacs/site-lisp"
-  , "'';"
-  ]
-
-wxcPostInstall :: Version -> String
-wxcPostInstall version = unlines
-  [ "postInstall = ''"
-  , "  cp -v dist/build/libwxc.so." ++ display version ++ " $out/lib/libwxc.so"
-  , "'';"
-  ]
-
-cabalInstallPostInstall :: String
-cabalInstallPostInstall = unlines
-  [ "postInstall = ''"
-  , "  mkdir $out/etc"
-  , "  mv bash-completion $out/etc/bash_completion.d"
-  , "'';"
-  ]
-
-darcsInstallPostInstall :: String
-darcsInstallPostInstall = unlines
-  [ "postInstall = ''"
-  , "  mkdir -p $out/etc/bash_completion.d"
-  , "  mv contrib/darcs_completion $out/etc/bash_completion.d/darcs"
-  , "'';"
-  ]
-
-xmonadPostInstall :: String
-xmonadPostInstall = unlines
-  [ "postInstall = ''"
-  , "  shopt -s globstar"
-  , "  mkdir -p $out/share/man/man1"
-  , "  mv \"$out/\"**\"/man/\"*.1 $out/share/man/man1/"
-  , "'';"
-  ]
-
-gitAnnexOverrides :: String
-gitAnnexOverrides = unlines
-  [ "preConfigure = \"export HOME=$TEMPDIR\";"
-  , "checkPhase = ''"
-  , "  cp dist/build/git-annex/git-annex git-annex"
-  , "  ./git-annex test"
-  , "'';"
-  ]
-
-ghciPostInstall :: String
-ghciPostInstall = unlines
-  [ "postInstall = ''"
-  , "  ensureDir \"$out/share/ghci\""
-  , "  ln -s \"$out/share/$pname-$version/ghci\" \"$out/share/ghci/$pname\""
-  , "'';"
-  ]
-
-hfusePreConfigure :: String
-hfusePreConfigure = unlines
-  [ "preConfigure = ''"
-  , "  sed -i -e \"s@  Extra-Lib-Dirs:         /usr/local/lib@  Extra-Lib-Dirs:         ${fuse}/lib@\" HFuse.cabal"
-  , "'';"
-  ]
-
-ghcPathsPatches :: String
-ghcPathsPatches = "patches = [ ./ghc-paths-nix.patch ];"
-
-lhs2texPostInstall :: String
-lhs2texPostInstall = unlines
-  [ "postInstall = ''"
-  , "  mkdir -p \"$out/share/doc/$name\""
-  , "  cp doc/Guide2.pdf $out/share/doc/$name"
-  , "  mkdir -p \"$out/nix-support\""
-  , "'';"
-  ]
-
-ncursesPatchPhase :: String
-ncursesPatchPhase = "patchPhase = \"find . -type f -exec sed -i -e 's|ncursesw/||' {} \\\\;\";"
-
-agdaPostInstall :: String
-agdaPostInstall = unlines
-  [ "postInstall = ''"
-  , "  $out/bin/agda -c --no-main $(find $out/share -name Primitive.agda)"
-  , "  $out/bin/agda-mode compile"
-  , "'';"
-  ]
-
-structuredHaskellModePostInstall :: String
-structuredHaskellModePostInstall = unlines
-  [ "postInstall = ''"
-  , "  emacs -L elisp --batch -f batch-byte-compile \"elisp/\"*.el"
-  , "  install -d $out/share/emacs/site-lisp"
-  , "  install \"elisp/\"*.el \"elisp/\"*.elc  $out/share/emacs/site-lisp"
-  , "'';"
-  ]
-
-sloanePostInstall :: String
-sloanePostInstall = unlines
-  [ "postInstall = ''"
-  , "  mkdir -p $out/share/man/man1"
-  , "  cp sloane.1 $out/share/man/man1/"
-  , "'';"
-  ]
-
-haddockPreCheck :: String
-haddockPreCheck = "preCheck = \"unset GHC_PACKAGE_PATH\";"
-
-ghcParserPatchPhase :: String
-ghcParserPatchPhase = unlines
-  [ "patchPhase = ''"
-  , "  substituteInPlace build-parser.sh --replace \"/bin/bash\" \"$SHELL\""
-  , "'';"
-  ]
 -}
+
+-- ghcModPostInstall :: String -> Version -> String
+-- ghcModPostInstall pname version = unlines
+--   [ "configureFlags = \"--datasubdir=" ++ pname ++ "-" ++ display version ++ "\";"
+--   , "postInstall = ''"
+--   , "  cd $out/share/" ++ pname ++ "-" ++ display version
+--   , "  make"
+--   , "  rm Makefile"
+--   , "  cd .."
+--   , "  ensureDir \"$out/share/emacs\""
+--   , "  mv " ++ pname ++ "-" ++ display version ++ " emacs/site-lisp"
+--   , "'';"
+--   ]
+
+-- wxcPostInstall :: Version -> String
+-- wxcPostInstall version = unlines
+--   [ "postInstall = ''"
+--   , "  cp -v dist/build/libwxc.so." ++ display version ++ " $out/lib/libwxc.so"
+--   , "'';"
+--   ]
+
+-- cabalInstallPostInstall :: String
+-- cabalInstallPostInstall = unlines
+--   [ "postInstall = ''"
+--   , "  mkdir $out/etc"
+--   , "  mv bash-completion $out/etc/bash_completion.d"
+--   , "'';"
+--   ]
+
+-- darcsInstallPostInstall :: String
+-- darcsInstallPostInstall = unlines
+--   [ "postInstall = ''"
+--   , "  mkdir -p $out/etc/bash_completion.d"
+--   , "  mv contrib/darcs_completion $out/etc/bash_completion.d/darcs"
+--   , "'';"
+--   ]
+
+-- xmonadPostInstall :: String
+-- xmonadPostInstall = unlines
+--   [ "postInstall = ''"
+--   , "  shopt -s globstar"
+--   , "  mkdir -p $out/share/man/man1"
+--   , "  mv \"$out/\"**\"/man/\"*.1 $out/share/man/man1/"
+--   , "'';"
+--   ]
+
+-- gitAnnexOverrides :: String
+-- gitAnnexOverrides = unlines
+--   [ "preConfigure = \"export HOME=$TEMPDIR\";"
+--   , "checkPhase = ''"
+--   , "  cp dist/build/git-annex/git-annex git-annex"
+--   , "  ./git-annex test"
+--   , "'';"
+--   ]
+
+-- ghciPostInstall :: String
+-- ghciPostInstall = unlines
+--   [ "postInstall = ''"
+--   , "  ensureDir \"$out/share/ghci\""
+--   , "  ln -s \"$out/share/$pname-$version/ghci\" \"$out/share/ghci/$pname\""
+--   , "'';"
+--   ]
+
+-- hfusePreConfigure :: String
+-- hfusePreConfigure = unlines
+--   [ "preConfigure = ''"
+--   , "  sed -i -e \"s@  Extra-Lib-Dirs:         /usr/local/lib@  Extra-Lib-Dirs:         ${fuse}/lib@\" HFuse.cabal"
+--   , "'';"
+--   ]
+
+-- ghcPathsPatches :: String
+-- ghcPathsPatches = "patches = [ ./ghc-paths-nix.patch ];"
+
+-- lhs2texPostInstall :: String
+-- lhs2texPostInstall = unlines
+--   [ "postInstall = ''"
+--   , "  mkdir -p \"$out/share/doc/$name\""
+--   , "  cp doc/Guide2.pdf $out/share/doc/$name"
+--   , "  mkdir -p \"$out/nix-support\""
+--   , "'';"
+--   ]
+
+-- ncursesPatchPhase :: String
+-- ncursesPatchPhase = "patchPhase = \"find . -type f -exec sed -i -e 's|ncursesw/||' {} \\\\;\";"
+
+-- agdaPostInstall :: String
+-- agdaPostInstall = unlines
+--   [ "postInstall = ''"
+--   , "  $out/bin/agda -c --no-main $(find $out/share -name Primitive.agda)"
+--   , "  $out/bin/agda-mode compile"
+--   , "'';"
+--   ]
+
+-- structuredHaskellModePostInstall :: String
+-- structuredHaskellModePostInstall = unlines
+--   [ "postInstall = ''"
+--   , "  emacs -L elisp --batch -f batch-byte-compile \"elisp/\"*.el"
+--   , "  install -d $out/share/emacs/site-lisp"
+--   , "  install \"elisp/\"*.el \"elisp/\"*.elc  $out/share/emacs/site-lisp"
+--   , "'';"
+--   ]
+
+-- sloanePostInstall :: String
+-- sloanePostInstall = unlines
+--   [ "postInstall = ''"
+--   , "  mkdir -p $out/share/man/man1"
+--   , "  cp sloane.1 $out/share/man/man1/"
+--   , "'';"
+--   ]
+
+-- ghcParserPatchPhase :: String
+-- ghcParserPatchPhase = unlines
+--   [ "patchPhase = ''"
+--   , "  substituteInPlace build-parser.sh --replace \"/bin/bash\" \"$SHELL\""
+--   , "'';"
+--   ]
